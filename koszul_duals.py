@@ -330,6 +330,22 @@ def format_shifted(module_label: str, shift: int) -> str:
     return f"{module_label}[{shift}]"
 
 
+def normalize_vee_spellings(label: str) -> str:
+    normalized = label.replace("^vee", "ᵛ")
+    normalized = normalized.replace("^v", "ᵛ")
+    normalized = normalized.replace("^∨", "ᵛ")
+    normalized = normalized.replace("∨", "ᵛ")
+    return normalized.replace("^*", "*")
+
+
+def split_vee_suffix(label: str) -> tuple[str, bool]:
+    normalized = normalize_vee_spellings(label)
+    for suffix in ("ᵛ", "vee", "dual", "v", "*"):
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)], True
+    return normalized, False
+
+
 def sl2_weight_label(weight: Fraction) -> str:
     return category_o.format_weight(weight)
 
@@ -362,33 +378,29 @@ def parse_sl2_shifted_object(label: str) -> Sl2FunctorObject:
             f"could not parse cohomological shift in {label!r}; use an integer shift like [0] or [-1]."
         )
 
-    normalized = normalized.replace("^vee", "ᵛ")
-    normalized = normalized.replace("^v", "ᵛ")
-    normalized = normalized.replace("^∨", "ᵛ")
-    normalized = normalized.replace("∨", "ᵛ")
-    normalized = normalized.replace("^*", "*")
+    normalized, has_vee_suffix = split_vee_suffix(normalized)
 
-    dual_verma = False
-    for suffix in ("ᵛ", "vee", "dual", "v", "*"):
-        if normalized.endswith(suffix):
-            normalized = normalized[: -len(suffix)]
-            dual_verma = True
-            break
-
-    if not normalized or normalized[0] not in {"M", "L", "P"}:
-        allowed = "M(0)[0], M0[0], M(0)v[0], L(0)[0], P(-2)[0]"
+    if not normalized or normalized[0] not in {"M", "L", "P", "I"}:
+        allowed = "M(0)[0], M0[0], M(0)v[0], L(0)v[0], P(-2)v[0], I(0)v[0]"
         raise ValueError(f"unknown sl2 object {label!r}; try {allowed}.")
 
     module_kind = normalized[0]
+    dual_verma = False
+    if has_vee_suffix:
+        if module_kind == "M":
+            dual_verma = True
+        elif module_kind == "L":
+            module_kind = "L"
+        elif module_kind == "P":
+            module_kind = "I"
+        elif module_kind == "I":
+            module_kind = "P"
+
     weight_text = normalized[1:]
     if weight_text.startswith("(") and weight_text.endswith(")"):
         weight_text = weight_text[1:-1]
     if not weight_text:
         raise ValueError(f"missing highest weight in {label!r}.")
-    if dual_verma and module_kind != "M":
-        raise ValueError(
-            f"the dual-Verma suffix is only supported for M(...), not {module_kind}(...)."
-        )
 
     try:
         weight = category_o.parse_highest_weight(weight_text)
@@ -427,6 +439,10 @@ def sl2_functor_input_label(spec: Sl2FunctorObject) -> str:
         return f"{base} = K({sl2_shifted_module_label('L', spec.weight, spec.shift)})"
     if spec.module_kind == "P" and spec.weight == dominant:
         return f"{base} = K({sl2_shifted_module_label('M', spec.weight, spec.shift)})"
+    if spec.module_kind == "I" and spec.weight == dominant:
+        return f"{base} = K({sl2_shifted_module_label('M', spec.weight, spec.shift, dual_verma=True)})"
+    if spec.module_kind == "I" and spec.weight == antidominant:
+        return f"{base} = K({sl2_shifted_module_label('P', spec.weight, spec.shift)})"
     return base
 
 
@@ -464,6 +480,18 @@ def sl2_concentrated_functor_image(spec: Sl2FunctorObject) -> dict[str, object]:
             "result": sl2_shifted_module_label("L", target_weight, target_shift),
         }
 
+    if spec.module_kind == "I" and spec.weight == antidominant:
+        target_weight = sl2_opposite_block_weight(spec.weight)
+        return {
+            "kind": "concentrated",
+            "input": input_label,
+            "result": sl2_shifted_module_label("L", target_weight, target_shift),
+            "identification": (
+                f"I({sl2_weight_label(antidominant)}) ≅ "
+                f"P({sl2_weight_label(antidominant)}) in regular sl2"
+            ),
+        }
+
     # The antidominant dual Verma is already the simple L(antidominant).
     return {
         "kind": "concentrated",
@@ -472,13 +500,12 @@ def sl2_concentrated_functor_image(spec: Sl2FunctorObject) -> dict[str, object]:
     }
 
 
-def sl2_functor_image(label: str) -> dict[str, object]:
-    spec = parse_sl2_shifted_object(label)
+def sl2_dominant_dual_verma_image(
+    spec: Sl2FunctorObject, ext_source_label: str | None = None
+) -> dict[str, object]:
     dominant, antidominant = sl2_block_pair(spec.weight)
-    if not spec.dual_verma or spec.weight == antidominant:
-        return sl2_concentrated_functor_image(spec)
-
     target_shift = -spec.shift
+    ext_source = ext_source_label or sl2_module_label("M", dominant, dual_verma=True)
     graded_terms = [
         (target_shift, sl2_module_label("L", dominant)),
         (target_shift + 1, sl2_module_label("L", dominant)),
@@ -495,17 +522,31 @@ def sl2_functor_image(label: str) -> dict[str, object]:
         "projective_resolution": (
             f"0 -> P({sl2_weight_label(dominant)}) -> P({sl2_weight_label(antidominant)}) "
             f"-> P({sl2_weight_label(antidominant)}) -> "
-            f"M({sl2_weight_label(dominant)})ᵛ -> 0"
+            f"{ext_source} -> 0"
         ),
         "raw_ext_groups": [
-            f"Ext^0(M({sl2_weight_label(dominant)})ᵛ, L({sl2_weight_label(antidominant)})) ≅ C",
-            f"Ext^1(M({sl2_weight_label(dominant)})ᵛ, L({sl2_weight_label(antidominant)})) ≅ C",
-            f"Ext^2(M({sl2_weight_label(dominant)})ᵛ, L({sl2_weight_label(dominant)})) ≅ C",
+            f"Ext^0({ext_source}, L({sl2_weight_label(antidominant)})) ≅ C",
+            f"Ext^1({ext_source}, L({sl2_weight_label(antidominant)})) ≅ C",
+            f"Ext^2({ext_source}, L({sl2_weight_label(dominant)})) ≅ C",
         ],
         "target_cohomology_after_vertex_swap": [
             f"H^{degree} ≅ {label}" for degree, label in graded_terms
         ],
     }
+
+
+def sl2_functor_image(label: str) -> dict[str, object]:
+    spec = parse_sl2_shifted_object(label)
+    dominant, antidominant = sl2_block_pair(spec.weight)
+    if spec.module_kind == "I" and spec.weight == dominant:
+        return sl2_dominant_dual_verma_image(
+            spec,
+            ext_source_label=f"I({sl2_weight_label(dominant)})",
+        )
+    if not spec.dual_verma or spec.weight == antidominant:
+        return sl2_concentrated_functor_image(spec)
+
+    return sl2_dominant_dual_verma_image(spec)
 
 
 def sl2_functor_images(labels: Sequence[str] | None = None) -> list[dict[str, object]]:
@@ -653,7 +694,7 @@ def is_sln_object_text(value: str) -> bool:
     normalized = value.strip().replace(" ", "")
     if normalized.startswith("K(") and normalized.endswith(")"):
         normalized = normalized[2:-1]
-    return bool(normalized) and normalized[0] in {"M", "L", "P"}
+    return bool(normalized) and normalized[0] in {"M", "L", "P", "I"}
 
 
 def parse_sln_shifted_object(label: str, n: int) -> SlnFunctorObject:
@@ -672,14 +713,30 @@ def parse_sln_shifted_object(label: str, n: int) -> SlnFunctorObject:
             f"could not parse cohomological shift in {label!r}; use an integer shift like [0] or [-1]."
         )
 
-    if not normalized or normalized[0] not in {"M", "L", "P"}:
-        raise ValueError(f"unknown sl_{n} object {label!r}; try P(0)[0] or L(0)[0].")
+    normalized, has_vee_suffix = split_vee_suffix(normalized)
+
+    if not normalized or normalized[0] not in {"M", "L", "P", "I"}:
+        raise ValueError(f"unknown sl_{n} object {label!r}; try P(0)[0], L(0)[0], or I(0)v[0].")
 
     module_kind = normalized[0]
-    if module_kind == "M":
+    if has_vee_suffix:
+        if module_kind == "L":
+            module_kind = "L"
+        elif module_kind == "P":
+            module_kind = "I"
+        elif module_kind == "I":
+            module_kind = "P"
+        elif module_kind == "M":
+            raise ValueError(
+                "higher-rank sl_n object mode does not support dual Verma inputs M(...)v. "
+                "Use P(...), L(...), or I(...)v."
+            )
+
+    if module_kind == "I":
         raise ValueError(
-            "higher-rank sl_n object mode currently supports P(...) and L(...). "
-            "Use a bare weight, such as 0 or 0,1, to print the whole block correspondence."
+            "higher-rank sl_n object mode can parse I(...)v as P(...), but it does not "
+            "currently compute K(I(...)) or K(P(...)v). Those injective images need "
+            "projective resolutions/Ext data not stored by this script."
         )
 
     weight_text = normalized[1:]
@@ -716,12 +773,34 @@ def sln_functor_image(
     w0 = W.long_element()
     dominant_weight = category_o.sln_dominant_representative(spec.weight)
     element = category_o.sln_find_weyl_element(W, dominant_weight, spec.weight)
+
+    effective_kind = spec.module_kind
+    input_label = f"K({spec.shifted_label()})"
+    if spec.module_kind == "M":
+        if element == W.one():
+            effective_kind = "P"
+            input_label = (
+                f"{input_label} = K({sln_shifted_module_label('P', spec.weight, spec.shift)})"
+            )
+        elif element == w0:
+            effective_kind = "L"
+            input_label = (
+                f"{input_label} = K({sln_shifted_module_label('L', spec.weight, spec.shift)})"
+            )
+        else:
+            raise ValueError(
+                "higher-rank sl_n Verma object mode currently supports only Vermas "
+                "that are already projective or simple: M(dominant) = P(dominant) "
+                "and M(antidominant) = L(antidominant). General M(...) images need "
+                "Ext data not stored by this script."
+            )
+
     target = dual_element(w0, element, dual_map)
     target_weight = category_o.sln_dot_action(dominant_weight, target)
-    target_kind = "L" if spec.module_kind == "P" else "P"
+    target_kind = "L" if effective_kind == "P" else "P"
     return {
         "kind": "concentrated",
-        "input": f"K({spec.shifted_label()})",
+        "input": input_label,
         "result": sln_shifted_module_label(target_kind, target_weight, -spec.shift),
         "source_weight": category_o.format_weight_vector(spec.weight),
         "source_reduced_word": list(category_o.word_tuple(element)),
@@ -810,7 +889,8 @@ def render_sln_inputs(
         if not all(object_flags):
             raise ValueError(
                 "Do not mix bare block weights with object inputs. "
-                "Use either sl3 0,1 or sl3 'P(0,1)[0]' 'L(-2,2)[1]'."
+                "Use either sl3 0,1 or sl3 'P(0,1)[0]' 'M(0,1)[0]' "
+                "'L(-2,2)[1]' 'I(0,1)v[0]'."
             )
         return render_sln_functor_images(
             n, sln_functor_images(n, inputs, dual_map=dual_map), format_name
@@ -973,7 +1053,8 @@ def build_sln_parser(
         nargs="*",
         help=(
             "Either a highest weight for a block table, e.g. 0 or 1,0, "
-            "or object inputs such as P(0,1)[0] and L(-2,2)[1]. "
+            "or object inputs such as P(0,1)[0], M(0,1)[0], L(-2,2)[1], "
+            "and I(0,1)v[0]. "
             "Defaults to the principal regular block."
         ),
     )
@@ -999,12 +1080,14 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""Examples:
   ./koszul_duals.py sl2-principal
   ./koszul_duals.py sl2
-  ./koszul_duals.py sl2 M0 M-2 L0 P-2 M0v
+  ./koszul_duals.py sl2 M0 M-2 L0 P-2 I0 M0v P0v I0v
   ./koszul_duals.py sl2-principal --format json
   ./koszul_duals.py regular-block A2
   ./koszul_duals.py regular-block B3
   ./koszul_duals.py sl3
   ./koszul_duals.py sl3 'P(0,1)[0]'
+  ./koszul_duals.py sl3 'M(0,1)[0]'
+  ./koszul_duals.py sl3 'I(0,1)v[0]'
   ./koszul_duals.py sl3 0,1
 """,
     )
@@ -1027,7 +1110,8 @@ def build_parser() -> argparse.ArgumentParser:
         "objects",
         nargs="*",
         help=(
-            "Objects to compute. Use aliases like M0, M-2, L0, P-2, M0v, or quoted M(0)[1]. "
+            "Objects to compute. Use aliases like M0, M-2, L0, P-2, I0, M0v, P0v, I0v, "
+            "or quoted M(0)[1]. "
             "Defaults to the list from the notes."
         ),
     )
@@ -1060,7 +1144,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help=(
             "Either a highest weight for a block table, e.g. 0 or 1,0, "
-            "or object inputs such as P(0,1)[0] and L(-2,2)[1]. "
+            "or object inputs such as P(0,1)[0], M(0,1)[0], L(-2,2)[1], "
+            "and I(0,1)v[0]. "
             "Defaults to the principal regular block."
         ),
     )
